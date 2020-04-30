@@ -49,8 +49,7 @@ TickContext g_ctx;
  *
  *   hello-jniCallback/app/src/main/java/com/example/hellojnicallback/MainActivity.java
  */
-JNIEXPORT jstring JNICALL
-Java_com_example_hellojnicallback_MainActivity_stringFromJNI( JNIEnv* env, jobject thiz )
+static jstring stringFromJNI( JNIEnv* env, jobject thiz )
 {
 #if defined(__arm__)
     #if defined(__ARM_ARCH_7A__)
@@ -136,42 +135,6 @@ void queryRuntimeInfo(JNIEnv *env, jobject instance) {
 }
 
 /*
- * processing one time initialization:
- *     Cache the javaVM into our context
- *     Find class ID for JniHelper
- *     Create an instance of JniHelper
- *     Make global reference since we are using them from a native thread
- * Note:
- *     All resources allocated here are never released by application
- *     we rely on system to free all global refs when it goes away;
- *     the pairing function JNI_OnUnload() never gets called at all.
- */
-JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-    JNIEnv* env;
-    memset(&g_ctx, 0, sizeof(g_ctx));
-
-    g_ctx.javaVM = vm;
-    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        return JNI_ERR; // JNI version not supported.
-    }
-
-    jclass  clz = (*env)->FindClass(env,
-                                    "com/example/hellojnicallback/JniHandler");
-    g_ctx.jniHelperClz = (*env)->NewGlobalRef(env, clz);
-
-    jmethodID  jniHelperCtor = (*env)->GetMethodID(env, g_ctx.jniHelperClz,
-                                                   "<init>", "()V");
-    jobject    handler = (*env)->NewObject(env, g_ctx.jniHelperClz,
-                                           jniHelperCtor);
-    g_ctx.jniHelperObj = (*env)->NewGlobalRef(env, handler);
-    queryRuntimeInfo(env, g_ctx.jniHelperObj);
-
-    g_ctx.done = 0;
-    g_ctx.mainActivityObj = NULL;
-    return  JNI_VERSION_1_6;
-}
-
-/*
  * A helper function to wrap java JniHelper::updateStatus(String msg)
  * JNI allow us to call this function via an instance even it is
  * private function.
@@ -201,10 +164,10 @@ void*  UpdateTicks(void* context) {
         }
     }
 
-    jmethodID statusId = (*env)->GetMethodID(env, pctx->jniHelperClz,
+    jmethodID statusId = (*env)->GetMethodID(env, pctx->mainActivityClz,
                                              "updateStatus",
                                              "(Ljava/lang/String;)V");
-    sendJavaMsg(env, pctx->jniHelperObj, statusId,
+    sendJavaMsg(env, pctx->mainActivityObj, statusId,
                 "TickerThread status: initializing...");
 
     // get mainActivity updateTimer function
@@ -217,7 +180,7 @@ void*  UpdateTicks(void* context) {
             (__kernel_suseconds_t) 0
     };
 
-    sendJavaMsg(env, pctx->jniHelperObj, statusId,
+    sendJavaMsg(env, pctx->mainActivityObj, statusId,
                 "TickerThread status: start ticking ...");
     while(1) {
         gettimeofday(&beginTime, NULL);
@@ -242,12 +205,12 @@ void*  UpdateTicks(void* context) {
         if (sleepTime.tv_sec <= 1) {
             nanosleep(&sleepTime, NULL);
         } else {
-            sendJavaMsg(env, pctx->jniHelperObj, statusId,
+            sendJavaMsg(env, pctx->mainActivityObj, statusId,
                         "TickerThread error: processing too long!");
         }
     }
 
-    sendJavaMsg(env, pctx->jniHelperObj, statusId,
+    sendJavaMsg(env, pctx->mainActivityObj, statusId,
                 "TickerThread status: ticking stopped");
     (*javaVM)->DetachCurrentThread(javaVM);
     return context;
@@ -256,8 +219,7 @@ void*  UpdateTicks(void* context) {
 /*
  * Interface to Java side to start ticks, caller is from onResume()
  */
-JNIEXPORT void JNICALL
-Java_com_example_hellojnicallback_MainActivity_startTicks(JNIEnv *env, jobject instance) {
+static void startTicks(JNIEnv *env, jobject instance) {
     pthread_t       threadInfo_;
     pthread_attr_t  threadAttr_;
 
@@ -269,6 +231,10 @@ Java_com_example_hellojnicallback_MainActivity_startTicks(JNIEnv *env, jobject i
     jclass clz = (*env)->GetObjectClass(env, instance);
     g_ctx.mainActivityClz = (*env)->NewGlobalRef(env, clz);
     g_ctx.mainActivityObj = (*env)->NewGlobalRef(env, instance);
+    jmethodID timerId = (*env)->GetMethodID(env, g_ctx.mainActivityClz,
+                                            "updateTimer", "()V");
+    (*env)->CallVoidMethod(env, g_ctx.mainActivityObj, timerId);
+
 
     int result  = pthread_create( &threadInfo_, &threadAttr_, UpdateTicks, &g_ctx);
     assert(result == 0);
@@ -283,8 +249,7 @@ Java_com_example_hellojnicallback_MainActivity_startTicks(JNIEnv *env, jobject i
  *    we need to hold and make sure our native thread has finished before return
  *    for a clean shutdown. The caller is from onPause
  */
-JNIEXPORT void JNICALL
-Java_com_example_hellojnicallback_MainActivity_StopTicks(JNIEnv *env, jobject instance) {
+static void stopTicks(JNIEnv *env, jobject instance) {
     pthread_mutex_lock(&g_ctx.lock);
     g_ctx.done = 1;
     pthread_mutex_unlock(&g_ctx.lock);
@@ -305,3 +270,53 @@ Java_com_example_hellojnicallback_MainActivity_StopTicks(JNIEnv *env, jobject in
 
     pthread_mutex_destroy(&g_ctx.lock);
 }
+
+JNINativeMethod method_table[] = {
+        {"stringFromJNI", "()Ljava/lang/String;", (void*)stringFromJNI},
+        {"startTicks", "()V", (void*)startTicks},
+        {"stopTicks", "()V", (void*)stopTicks},
+};
+/*
+ * processing one time initialization:
+ *     Cache the javaVM into our context
+ *     Find class ID for JniHelper
+ *     Create an instance of JniHelper
+ *     Make global reference since we are using them from a native thread
+ * Note:
+ *     All resources allocated here are never released by application
+ *     we rely on system to free all global refs when it goes away;
+ *     the pairing function JNI_OnUnload() never gets called at all.
+ */
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
+    JNIEnv* env;
+    memset(&g_ctx, 0, sizeof(g_ctx));
+
+    g_ctx.javaVM = vm;
+    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        return JNI_ERR; // JNI version not supported.
+    }
+//    jclass clz = (*env)->FindClass(env,
+//                                    "com/example/hellojnicallback/MainActivity");
+
+
+    jclass clz = (*env)->FindClass(env,
+                                    "com/example/hellojnicallback/JniHandler");
+    if((*env)->RegisterNatives(env, clz, method_table, sizeof(method_table)/sizeof(method_table[0])))
+    {
+        return JNI_ERR;
+    }
+
+    //g_ctx.jniHelperClz = (*env)->NewGlobalRef(env, clz);
+
+    //jmethodID  jniHelperCtor = (*env)->GetMethodID(env, g_ctx.jniHelperClz,
+     //                                              "<init>", "()V");
+    //jobject    handler = (*env)->NewObject(env, g_ctx.jniHelperClz,
+    //                                       jniHelperCtor);
+    //g_ctx.jniHelperObj = (*env)->NewGlobalRef(env, handler);
+    //queryRuntimeInfo(env, g_ctx.jniHelperObj);
+
+    g_ctx.done = 0;
+    g_ctx.mainActivityObj = NULL;
+    return  JNI_VERSION_1_6;
+}
+

@@ -28,6 +28,11 @@ import android.util.Log;
  * The calling code is inside hello-jnicallback.c
  */
 public class JniHandler {
+
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+
     /*
      * Print out status to logcat
      */
@@ -55,4 +60,52 @@ public class JniHandler {
     public long getRuntimeMemorySize() {
         return Runtime.getRuntime().freeMemory();
     }
+
+    /*
+     * A function calling from JNI to update current timer
+     */
+    @Keep
+    private void updateTimer() {
+        ++second;
+        if (second >= 60) {
+            ++minute;
+            second -= 60;
+            if (minute >= 60) {
+                ++hour;
+                minute -= 60;
+            }
+        }
+//        runOnUiThread(new Runnable() {
+//            @Override
+//            public void run() {
+                String ticks = "" + hour + ":" +
+                        minute + ":" +
+                        second;
+//                MainActivity.this.tickView.setText(ticks);
+        Log.i("JniHandler", ticks);
+//            }
+//        });
+    }
+
+    public void start() {
+        startTicks();
+    }
+
+    public void stop() {
+        stopTicks();
+    }
+
+    public String stringFrom() {
+        return stringFromJNI();
+    }
+
+    static {
+        System.loadLibrary("hello-jnicallback");
+    }
+
+    public native String stringFromJNI();
+
+    public native void startTicks();
+
+    public native void stopTicks();
 }
